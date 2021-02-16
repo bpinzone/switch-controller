@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-
 import argparse
 from contextlib import contextmanager
 
@@ -12,8 +11,6 @@ import serial
 import math
 import time
 from collections import defaultdict
-
-first_message_written = False
 
 # 0 or 1
 buttonmapping = [
@@ -75,39 +72,6 @@ def generate_message(pressed_buttons: set, axes: defaultdict, hats: set):
     return binascii.hexlify(rawbytes) + b'\n'
 
 
-def send_message(ser, message, sleep_seconds):
-
-    # 120ms -> 34 seconds, 33 seconds
-    # 80ms -> 425, 428 messages, 34 seconds, 35 seconds
-    # 40ms -> 952, 992, 970 messages, 41 seconds, 38 seconds
-
-    # global first_message_written
-
-
-    ser.write(message)
-    # if not first_message_written:
-    #     first_message_written = True
-    #     time.sleep(.5)
-    #     return
-
-    # ser.reset_output_buffer()
-    # wait for the arduino to request another state.
-    print('about to read')
-    response = ser.read(1)
-    print('just read')
-    if response == b'U':
-        # break
-        pass
-    elif response == b'X':
-        print('Arduino reported buffer overrun or time utility does not work.')
-    else:
-        print(response)
-
-    # ser.reset_input_buffer()
-    # time.sleep(sleep_seconds)
-    # print('WAT')
-
-
 def main():
 
     parser = argparse.ArgumentParser()
@@ -123,6 +87,9 @@ def main():
 
     commands = ['stick', 'hold_a', 'hold_b', 'exit']
 
+    non_terminal_commands = ['a', 'left', 'right']
+    num_responses_to_read = 0
+
     # buttons: set of strings (representing buttons that are pushed down.)
     # axes: dict: string->real value
     # hats: set of strings. (representing buttons that are pushed down)
@@ -130,9 +97,11 @@ def main():
 
     # Sleep to give the Arduino time to set up
     time.sleep(.5)
+    ser.reset_input_buffer()
+    ser.reset_output_buffer()
+    time.sleep(.5)
 
     while True:
-
 
         pressed_buttons = set()
         axes = defaultdict(int)
@@ -140,18 +109,17 @@ def main():
 
         # Each LINE happens in the same frame.
         user_input = input('cmd >> ')
-        print(user_input)
+        # print(user_input)
 
         user_input = user_input.strip()
 
         amper_split = user_input.split('&&')
+        amper_split = [a.strip() for a in amper_split]
 
-        hold_time = 50 / 1000
-        # print('hold time is:' + str(hold_time))
+        listen_after_this_iter = not all([c in non_terminal_commands for c in amper_split])
 
         for section in amper_split:
 
-            section = section.strip()
             space_split = section.split(' ')
 
             if space_split[0] in commands:
@@ -164,22 +132,18 @@ def main():
                     assert stick == 'r', 'FUCK other sticks'
 
                     direction = space_split[2]
-                    hold_time = .15
                     assert direction in ['up', 'down', 'left', 'right', 'center']
                     axes = get_axes(direction)
 
                 elif space_split[0] == 'hold_a':
-                    hold_time = 1
                     # NOTE: special mapping for arduino
                     pressed_buttons.add('x')
 
                 elif space_split[0] == 'hold_b':
-                    hold_time = 1
                     # NOTE: special mapping for arduino
                     pressed_buttons.add('y')
 
                 elif space_split[0] == 'exit':
-                    send_message(ser, empty_message, 0.5)
                     return
 
             else:
@@ -193,8 +157,18 @@ def main():
 
         message = generate_message(pressed_buttons, axes, hats)
 
-        send_message(ser, message, hold_time)
-        # send_message(ser, empty_message, hold_time)
+        ser.write(message)
+        ser.flushOutput()
+        num_responses_to_read += 1
+
+        if listen_after_this_iter:
+            # print(f'Listening to a response of length: {str(num_responses_to_read)}')
+            listen_after_this_iter = False
+            response = ser.read(num_responses_to_read)
+            # print('Read the response')
+            if response != (b'U' * num_responses_to_read):
+                print(f'Bad response: {response}')
+            num_responses_to_read = 0
 
 
 if __name__ == '__main__':

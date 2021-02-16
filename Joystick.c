@@ -44,10 +44,10 @@ uint8_t RY2 = 0;     // Right Stick Y
 bool finished_sending_empty_cycles = true;
 bool finished_sending_button_down_cycles = true;
 
-const int regular_press_cycles = 3;
+const int regular_press_cycles = 4;
 const int hold_press_cycles = 150;
 
-int cycles_to_send = 3;
+int cycles_to_send;
 int remaining_cycles_to_send = 0;
 
 // Use a circular buffer for the serial comms.
@@ -64,6 +64,10 @@ ISR(USART1_RX_vect) {
 void Serial_Task(void) {
 	static uint8_t l = 0;
 	static uint8_t b[7];
+
+    if(!finished_sending_button_down_cycles || !finished_sending_empty_cycles){
+        return;
+    }
 
 	uint8_t val;
 	char c;
