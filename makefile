@@ -11,6 +11,12 @@
 
 # Run "make help" for target help.
 
+# /dev/ttyACM0
+# sudo python3 bridge.py -p /dev/ttyACM0
+
+# Correct based on this I think:
+# https://learn.sparkfun.com/tutorials/arduino-comparison-guide/all?print
+# https://www.amazon.com/acme-controller-Arduino-Uno-Atmega16U2/dp/B01IOYRHNG
 MCU          = atmega16u2
 ARCH         = AVR8
 F_CPU        = 16000000

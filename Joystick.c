@@ -27,6 +27,11 @@ these buttons for our use.
 #include <LUFA/Drivers/Peripheral/Serial.h>
 #include "Joystick.h"
 
+int y_buttons_mask = 1 << 0; // least significant bit.
+int b_buttons_mask = 1 << 1;
+int a_buttons_mask = 1 << 2;
+int x_buttons_mask = 1 << 3;
+
 uint8_t target = RELEASE;
 uint16_t buttons;
 
@@ -35,6 +40,15 @@ uint8_t LX2 = 0;     // Left  Stick X
 uint8_t LY2 = 0;     // Left  Stick Y
 uint8_t RX2 = 0;     // Right Stick X
 uint8_t RY2 = 0;     // Right Stick Y
+
+bool finished_sending_empty_cycles = true;
+bool finished_sending_button_down_cycles = true;
+
+const int regular_press_cycles = 3;
+const int hold_press_cycles = 150;
+
+int cycles_to_send = 3;
+int remaining_cycles_to_send = 0;
 
 // Use a circular buffer for the serial comms.
 volatile uint8_t buffer[256];
@@ -54,21 +68,41 @@ void Serial_Task(void) {
 	uint8_t val;
 	char c;
 
-	while(buffer_tail != buffer_head) {
+    bool found_whole_state = false;
+
+	while(buffer_tail != buffer_head && !found_whole_state) {
 
 		c = buffer[buffer_tail];
 
 		if ((c == '\r' || c == '\n')) {
 			if(l == 14) {
+                found_whole_state = true;
 				HAT2 = b[0];
 				buttons = (b[1] << 8) | b[2];
 				LX2 = b[3];
 				LY2 = b[4];
 				RX2 = b[5];
 				RY2 = b[6];
+				// We've received a full set of data. The host is now waiting for us to communicate that to the Switch
+                finished_sending_button_down_cycles = false;
+                finished_sending_empty_cycles = false;
+                if(buttons & x_buttons_mask){
+                    // hardcode x -> hold_a
+                    cycles_to_send = hold_press_cycles;
+                    buttons = a_buttons_mask;
+                }
+				else if(buttons & y_buttons_mask) {
+                    // hardcode y -> hold b
+                    cycles_to_send = hold_press_cycles;
+                    buttons = b_buttons_mask;
+				}
+				else {
+                    cycles_to_send = regular_press_cycles;
+				}
+                remaining_cycles_to_send = cycles_to_send;
 			}
 			l=0;
-			memset(b, 0, sizeof(b));
+            memset(b, 0, sizeof(b));
 		} else {
 
 			if(c >= '0' && c <= '9') {
@@ -229,8 +263,23 @@ void HID_Task(void) {
 		// We then send an IN packet on this endpoint.
 		Endpoint_ClearIN();
 		// Inform host that a packet was sent.
-		printf("U");
+        if(!finished_sending_empty_cycles){
 
+            --remaining_cycles_to_send;
+
+            if(remaining_cycles_to_send == 0){
+
+                if(!finished_sending_button_down_cycles){
+                    finished_sending_button_down_cycles = true;
+                    remaining_cycles_to_send = cycles_to_send;
+                }
+                else{
+                    finished_sending_empty_cycles = true;
+                    printf("U");
+					fflush(stdout);
+                }
+            }
+        }
 		/* Clear the report data afterwards */
 		// memset(&JoystickInputData, 0, sizeof(JoystickInputData));
 	}
@@ -238,24 +287,25 @@ void HID_Task(void) {
 
 // Prepare the next report for the host.
 void GetNextReport(USB_JoystickReport_Input_t* const ReportData) {
-	/* Clear the report contents */
-	//memset(ReportData, 0, sizeof(USB_JoystickReport_Input_t));
-	//ReportData->LX = STICK_CENTER;
-	//ReportData->LY = STICK_CENTER;
-	//ReportData->RX = STICK_CENTER;
-	//ReportData->RY = STICK_CENTER;
-	//ReportData->HAT = HAT_CENTER;
-	//ReportData->Button = SWITCH_RELEASE;
-
-
 	//ReportData->Button |= buttons;
 
-	ReportData->Button = buttons;
-	ReportData->HAT = HAT2;
-
-	ReportData->LX = LX2;
-	ReportData->LY = LY2;
-	ReportData->RX = RX2;
-	ReportData->RY = RY2;
+    if(!finished_sending_button_down_cycles){
+		ReportData->Button = buttons;
+		ReportData->HAT = HAT2;
+		ReportData->LX = LX2;
+		ReportData->LY = LY2;
+		ReportData->RX = RX2;
+		ReportData->RY = RY2;
+    }
+    else{
+		/* Clear the report contents */
+		memset(ReportData, 0, sizeof(USB_JoystickReport_Input_t));
+		ReportData->Button = SWITCH_RELEASE;
+		ReportData->HAT = HAT_CENTER;
+		ReportData->LX = STICK_CENTER;
+		ReportData->LY = STICK_CENTER;
+		ReportData->RX = STICK_CENTER;
+		ReportData->RY = STICK_CENTER;
+    }
 }
 // vim: noexpandtab

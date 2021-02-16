@@ -11,208 +11,191 @@ import binascii
 import serial
 import math
 import time
+from collections import defaultdict
 
-from tqdm import tqdm
+first_message_written = False
 
-def enumerate_controllers():
-    print('Controllers connected to this system:')
-    for n in range(sdl2.SDL_NumJoysticks()):
-        name = sdl2.SDL_JoystickNameForIndex(n)
-        if name is not None:
-            name = name.decode('utf8')
-        print(n, ':', name)
-    print('Note: These are numbered by connection order. Numbers will change if you unplug a controller.')
-
-
-def get_controller(c):
-    try:
-        n = int(c, 10)
-        return sdl2.SDL_GameControllerOpen(n)
-    except ValueError:
-        for n in range(sdl2.SDL_NumJoysticks()):
-            name = sdl2.SDL_JoystickNameForIndex(n)
-            if name is not None:
-                name = name.decode('utf8')
-                if name == c:
-                    return sdl2.SDL_GameControllerOpen(n)
-        raise Exception('Controller not found: %s'.format(c))
-
-
+# 0 or 1
 buttonmapping = [
-    sdl2.SDL_CONTROLLER_BUTTON_X, # Y
-    sdl2.SDL_CONTROLLER_BUTTON_A, # B
-    sdl2.SDL_CONTROLLER_BUTTON_B, # A
-    sdl2.SDL_CONTROLLER_BUTTON_Y, # X
-    sdl2.SDL_CONTROLLER_BUTTON_LEFTSHOULDER, # L
-    sdl2.SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, # R
-    sdl2.SDL_CONTROLLER_BUTTON_INVALID, # ZL
-    sdl2.SDL_CONTROLLER_BUTTON_INVALID, # ZR
-    sdl2.SDL_CONTROLLER_BUTTON_BACK, # SELECT
-    sdl2.SDL_CONTROLLER_BUTTON_START, # START
-    sdl2.SDL_CONTROLLER_BUTTON_LEFTSTICK, # LCLICK
-    sdl2.SDL_CONTROLLER_BUTTON_RIGHTSTICK, # RCLICK
-    sdl2.SDL_CONTROLLER_BUTTON_GUIDE, # HOME
-    sdl2.SDL_CONTROLLER_BUTTON_INVALID, # CAPTURE
+    'y', 'b', 'a', 'x', 'l', 'r', 'zl', 'zr',
+    'select', 'start', 'lclick', 'rclick', 'home', 'capture'
 ]
 
-axismapping = [
-    sdl2.SDL_CONTROLLER_AXIS_LEFTX, # LX
-    sdl2.SDL_CONTROLLER_AXIS_LEFTY, # LY
-    sdl2.SDL_CONTROLLER_AXIS_RIGHTX, # RX
-    sdl2.SDL_CONTROLLER_AXIS_RIGHTY, # RY
-]
+# real values
+# mind axis_deadzone.
+axismapping = [ 'lx', 'ly', 'rx', 'ry' ]
 
-hatmapping = [
-    sdl2.SDL_CONTROLLER_BUTTON_DPAD_UP, # UP
-    sdl2.SDL_CONTROLLER_BUTTON_DPAD_RIGHT, # RIGHT
-    sdl2.SDL_CONTROLLER_BUTTON_DPAD_DOWN, # DOWN
-    sdl2.SDL_CONTROLLER_BUTTON_DPAD_LEFT, # LEFT
-]
+# 0 or 1
+# d-pad
+hatmapping = [ 'up', 'right', 'down', 'left' ]
 
-hatcodes = [8, 0, 2, 1, 4, 8, 3, 8, 6, 7, 8, 8, 5, 8, 8]
-
-axis_deadzone = 1000
+axis_deadzone = 30000
 trigger_deadzone = 0
 
+# fuck the left stick.
+def get_axes(direction):
+    axes = defaultdict(int)
+    if direction == 'up':
+        axes['rx'] = 0
+        axes['ry'] = -(axis_deadzone + 100)
+    elif direction == 'down':
+        axes['rx'] = 0
+        axes['ry'] = axis_deadzone + 100
+    elif direction == 'left':
+        axes['rx'] = -(axis_deadzone + 100)
+        axes['ry'] = 0
+    elif direction == 'right':
+        axes['rx'] = axis_deadzone + 100
+        axes['ry'] = 0
+    else:
+        assert direction == 'center'
+        axes['rx'] = 0
+        axes['ry'] = 0
 
-def controller_states(controller_id):
+    return axes
 
-    sdl2.SDL_Init(sdl2.SDL_INIT_GAMECONTROLLER)
-
-    controller = get_controller(controller_id)
-
-    try:
-        print('Using "{:s}" for input.'.format(
-            sdl2.SDL_JoystickName(sdl2.SDL_GameControllerGetJoystick(controller)).decode('utf8')))
-    except AttributeError:
-        print('Using controller {:s} for input.'.format(controller_id))
-
-    while True:
-        buttons = sum([sdl2.SDL_GameControllerGetButton(controller, b)<<n for n,b in enumerate(buttonmapping)])
-        buttons |=  (abs(sdl2.SDL_GameControllerGetAxis(controller, sdl2.SDL_CONTROLLER_AXIS_TRIGGERLEFT)) > trigger_deadzone) << 6
-        buttons |=  (abs(sdl2.SDL_GameControllerGetAxis(controller, sdl2.SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) > trigger_deadzone) << 7
-
-        hat = hatcodes[sum([sdl2.SDL_GameControllerGetButton(controller, b)<<n for n,b in enumerate(hatmapping)])]
-
-        rawaxis = [sdl2.SDL_GameControllerGetAxis(controller, n) for n in axismapping]
-        axis = [((0 if abs(x) < axis_deadzone else x) >> 8) + 128 for x in rawaxis]
-
-        rawbytes = struct.pack('>BHBBBB', hat, buttons, *axis)
-        yield binascii.hexlify(rawbytes) + b'\n'
-
-
-def replay_states(filename):
-    with open(filename, 'rb') as replay:
-        yield from replay.readlines()
+# magic
+hatcodes = [8, 0, 2, 1, 4, 8, 3, 8, 6, 7, 8, 8, 5, 8, 8]
 
 
-def example_macro():
-    buttons = 0
-    hat = 8
-    rx = 128
-    ry = 128
-    for i in range(240):
-        lx = int((1.0 + math.sin(2 * math.pi * i / 240)) * 127)
-        ly = int((1.0 + math.cos(2 * math.pi * i / 240)) * 127)
-        rawbytes = struct.pack('>BHBBBB', hat, buttons, lx, ly, rx, ry)
-        yield binascii.hexlify(rawbytes) + b'\n'
+# buttons: set of strings (representing buttons that are pushed down.)
+# axes: dict: string->real value
+# hats: set of strings. (representing buttons that are pushed down)
+def generate_message(pressed_buttons: set, axes: defaultdict, hats: set):
+    assert all((p in buttonmapping for p in pressed_buttons))
+    assert all((k in axismapping for k in axes.keys()))
+    assert all((h in hatmapping for h in hats))
+
+    buttons_encoded = sum([1 << buttonmapping.index(button_name) for button_name in pressed_buttons])
+    hat_encoded = hatcodes[sum([1 << hatmapping.index(d_pad_str) for d_pad_str in hats])]
+
+    rawaxis_encoded = [axes[axis] for axis in axismapping]
+    axis_encoded = [((0 if abs(x) < axis_deadzone else x) >> 8) + 128 for x in rawaxis_encoded]
+    rawbytes = struct.pack('>BHBBBB', hat_encoded, buttons_encoded, *axis_encoded)
+    return binascii.hexlify(rawbytes) + b'\n'
 
 
+def send_message(ser, message, sleep_seconds):
+
+    # 120ms -> 34 seconds, 33 seconds
+    # 80ms -> 425, 428 messages, 34 seconds, 35 seconds
+    # 40ms -> 952, 992, 970 messages, 41 seconds, 38 seconds
+
+    # global first_message_written
 
 
-class InputStack(object):
-    def __init__(self):
-        self.l = []
+    ser.write(message)
+    # if not first_message_written:
+    #     first_message_written = True
+    #     time.sleep(.5)
+    #     return
 
-    def push(self, it):
-        self.l.append(it)
+    # ser.reset_output_buffer()
+    # wait for the arduino to request another state.
+    print('about to read')
+    response = ser.read(1)
+    print('just read')
+    if response == b'U':
+        # break
+        pass
+    elif response == b'X':
+        print('Arduino reported buffer overrun or time utility does not work.')
+    else:
+        print(response)
 
-    def pop(self):
-        self.l.pop()
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        while True:
-            try:
-                return next(self.l[-1])
-            except StopIteration:
-                self.l.pop()
-            except IndexError:
-                raise StopIteration
-
+    # ser.reset_input_buffer()
+    # time.sleep(sleep_seconds)
+    # print('WAT')
 
 
-
-if __name__ == '__main__':
+def main():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-l', '--list-controllers', action='store_true', help='Display a list of controllers attached to the system.')
-    parser.add_argument('-c', '--controller', type=str, default='0', help='Controller to use. Default: 0.')
     parser.add_argument('-b', '--baud-rate', type=int, default=115200, help='Baud rate. Default: 115200.')
-    parser.add_argument('-p', '--port', type=str, default='/dev/ttyUSB0', help='Serial port. Default: /dev/ttyUSB0.')
-    parser.add_argument('-R', '--record', type=str, default=None, help='Record events to file.')
-    parser.add_argument('-P', '--playback', type=str, default=None, help='Play back events from file.')
-    parser.add_argument('-d', '--dontexit', action='store_true', help='Switch to live input when playback finishes, instead of exiting. Default: False.')
-    parser.add_argument('-q', '--quiet', action='store_true', help='Disable speed meter. Default: False.')
+    parser.add_argument('-p', '--port', type=str, default='/dev/ttyACM0', help='Serial port. Default: /dev/ttyACM0.')
 
     args = parser.parse_args()
-
-    if args.list_controllers:
-        sdl2.SDL_Init(sdl2.SDL_INIT_GAMECONTROLLER)
-        enumerate_controllers()
-        exit(0)
 
     ser = serial.Serial(args.port, args.baud_rate, bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE, timeout=None)
     print('Using {:s} at {:d} baud for comms.'.format(args.port, args.baud_rate))
 
-    input_stack = InputStack()
+    empty_message = generate_message({}, defaultdict(int), {})
 
-    if args.playback is None or args.dontexit:
-        live = controller_states(args.controller)
-        next(live) # pull a controller update to make it print the name before starting speed meter
-        input_stack.push(live)
-    if args.playback is not None:
-        input_stack.push(replay_states(args.playback))
+    commands = ['stick', 'hold_a', 'hold_b', 'exit']
 
-    with (open(args.record, 'wb') if args.record is not None else contextmanager(lambda: iter([None]))()) as record:
-        with tqdm(unit=' updates', disable=args.quiet) as pbar:
-            try:
-                while True:
+    # buttons: set of strings (representing buttons that are pushed down.)
+    # axes: dict: string->real value
+    # hats: set of strings. (representing buttons that are pushed down)
+    # def generate_message(pressed_buttons: set, axes: defaultdict, hats: set):
 
-                    for event in sdl2.ext.get_events():
-                        # we have to fetch the events from SDL in order for the controller
-                        # state to be updated.
+    # Sleep to give the Arduino time to set up
+    time.sleep(.5)
 
-                        # example of running a macro when a joystick button is pressed:
-                        #if event.type == sdl2.SDL_JOYBUTTONDOWN:
-                        #    if event.jbutton.button == 1:
-                        #        input_stack.push(example_macro())
-                        # or play from file:
-                        #        input_stack.push(replay_states(filename))
+    while True:
 
-                        pass
 
-                    try:
-                        message = next(input_stack)
-                        ser.write(message)
-                        if record is not None:
-                            record.write(message)
-                    except StopIteration:
-                        break
+        pressed_buttons = set()
+        axes = defaultdict(int)
+        hats = set()
 
-                    # update speed meter on console.
-                    pbar.set_description('Sent {:s}'.format(message[:-1].decode('utf8')))
-                    pbar.update()
+        # Each LINE happens in the same frame.
+        user_input = input('cmd >> ')
+        print(user_input)
 
-                    while True:
-                        # wait for the arduino to request another state.
-                        response = ser.read(1)
-                        if response == b'U':
-                            break
-                        elif response == b'X':
-                            print('Arduino reported buffer overrun.')
+        user_input = user_input.strip()
 
-            except KeyboardInterrupt:
-                print('\nExiting due to keyboard interrupt.')
+        amper_split = user_input.split('&&')
+
+        hold_time = 50 / 1000
+        # print('hold time is:' + str(hold_time))
+
+        for section in amper_split:
+
+            section = section.strip()
+            space_split = section.split(' ')
+
+            if space_split[0] in commands:
+
+                if space_split[0] == 'stick':
+
+                    assert len(space_split) == 3
+
+                    stick = space_split[1]
+                    assert stick == 'r', 'FUCK other sticks'
+
+                    direction = space_split[2]
+                    hold_time = .15
+                    assert direction in ['up', 'down', 'left', 'right', 'center']
+                    axes = get_axes(direction)
+
+                elif space_split[0] == 'hold_a':
+                    hold_time = 1
+                    # NOTE: special mapping for arduino
+                    pressed_buttons.add('x')
+
+                elif space_split[0] == 'hold_b':
+                    hold_time = 1
+                    # NOTE: special mapping for arduino
+                    pressed_buttons.add('y')
+
+                elif space_split[0] == 'exit':
+                    send_message(ser, empty_message, 0.5)
+                    return
+
+            else:
+                assert len(space_split) == 1
+                if space_split[0] in hatmapping:
+                    hats.add(space_split[0])
+                else:
+                    assert space_split[0] in buttonmapping
+                    pressed_buttons.add(space_split[0])
+
+
+        message = generate_message(pressed_buttons, axes, hats)
+
+        send_message(ser, message, hold_time)
+        # send_message(ser, empty_message, hold_time)
+
+
+if __name__ == '__main__':
+    main()
