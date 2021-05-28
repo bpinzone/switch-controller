@@ -1,4 +1,7 @@
 # switch-controller
+https://github.com/Phroon/switch-controller
+https://github.com/Phroon/switch-controller
+https://github.com/Phroon/switch-controller
 
 Lets you control a switch from your Linux Box
 

@@ -4,6 +4,7 @@
 *.bin
 *.elf
 *.hex
+!pretty_good_jeff.hex
 *.lss
 *.map
 *.sym
